@@ -1,5 +1,8 @@
-from fastapi import FastAPI
+from typing import Annotated
 
+from fastapi import FastAPI, Form, HTTPException, Response, status
+
+from models.form_data import FormData
 from models.item import Item
 
 app = FastAPI()
@@ -45,6 +48,42 @@ def create_item(item: Item):
    if item_dict is not None:
       fake_items_db.append(item_dict)
    return item_dict
+
+
+@app.post("/items_form/")
+def create_item_form(
+   item_name: Annotated[str, Form()],
+   description: Annotated[str, Form()],
+   price: Annotated[float, Form()],
+   tax: Annotated[float, Form()],
+):
+   if tax < 0:
+      raise HTTPException(
+         status_code=status.HTTP_400_BAD_REQUEST,
+         detail="Tax cannot be negative.",
+      )
+
+   if any(
+      isinstance(fake_item, dict) and fake_item.get("item_name") == item_name
+      for fake_item in fake_items_db
+   ):
+      raise HTTPException(
+         status_code=status.HTTP_400_BAD_REQUEST,
+         detail="Item already exists.",
+      )
+
+   form_data = FormData(
+      item_name=item_name,
+      description=description,
+      price=price,
+      tax=tax,
+   )
+
+   message = f"Item '{form_data.item_name}' created successfully with description '{form_data.description}', price {form_data.price}, and tax {form_data.tax}."
+
+   fake_items_db.append(form_data.model_dump())
+
+   return Response(content=message, status_code=201)
 
 
 @app.put("/items/{item_name}")
