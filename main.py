@@ -1,9 +1,23 @@
+import os
 from typing import Annotated
 
 from fastapi import FastAPI, Form, HTTPException, Response, status
+from dotenv import load_dotenv
+from supabase import Client, create_client
 
 from models.form_data import FormData
 from models.item import Item
+from models.task import Task
+
+load_dotenv()
+
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_publishable_key = os.getenv("SUPABASE_PUBLISHABLE_KEY")
+
+if not supabase_url or not supabase_publishable_key:
+   raise ValueError("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be set.")
+
+supabase: Client = create_client(supabase_url, supabase_publishable_key)
 
 app = FastAPI()
 
@@ -84,6 +98,52 @@ def create_item_form(
    fake_items_db.append(form_data.model_dump())
 
    return Response(content=message, status_code=201)
+
+
+@app.post("/tasks/")
+def create_task(task: Task):
+   data = supabase.table("task").insert(
+      {
+         "title": task.title,
+         "description": task.description,
+      }
+   ).execute()
+   return data.data
+
+
+@app.get("/tasks/")
+def get_tasks():
+   data = supabase.table("task").select("*").execute()
+   return data.data
+
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+   data = supabase.table("task").select("*").eq("id", task_id).execute()
+   if not data.data:
+      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+   return data.data[0]
+
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, task: Task):
+   data = supabase.table("task").update(
+      {
+         "title": task.title,
+         "description": task.description,
+      }
+   ).eq("id", task_id).execute()
+   if not data.data:
+      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+   return data.data[0]
+
+
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int):
+   data = supabase.table("task").delete().eq("id", task_id).execute()
+   if not data.data:
+      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+   return data.data[0]
 
 
 @app.put("/items/{item_name}")
