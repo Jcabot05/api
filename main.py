@@ -1,167 +1,110 @@
 import os
-from typing import Annotated
 
-from fastapi import FastAPI, Form, HTTPException, Response, status
+import requests
 from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from supabase import Client, create_client
 
-from models.form_data import FormData
-from models.item import Item
-from models.task import Task
 
 load_dotenv()
 
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_publishable_key = os.getenv("SUPABASE_PUBLISHABLE_KEY")
-
-if not supabase_url or not supabase_publishable_key:
-   raise ValueError("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be set.")
-
-supabase: Client = create_client(supabase_url, supabase_publishable_key)
-
 app = FastAPI()
+security = HTTPBearer(auto_error=False)
 
-fake_items_db = [
-   {"item_name": "Foo"},
-   {"item_name": "Bar"},
-   {"item_name": "Baz"},
-   {"item_name": "Qux"},
-   {"item_name": "Quux"},
-   {"item_name": "Corge"},
-   {"item_name": "Grault"},
-   {"item_name": "Garply"},
-   {"item_name": "Waldo"},
-   {"item_name": "Fred"},
-   {"item_name": "Plugh"},
-   {"item_name": "Xyzzy"},
-   {"item_name": "Thud"},
-]
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+def get_supabase_url() -> str:
+    supabase_url = os.getenv("SUPABASE_URL")
+    if not supabase_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SUPABASE_URL no está configurada",
+        )
+    return supabase_url
+
+
+def get_supabase_key() -> str:
+    supabase_key = os.getenv("SUPABASE_PUBLISHABLE_KEY")
+    if not supabase_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SUPABASE_PUBLISHABLE_KEY no está configurada",
+        )
+    return supabase_key
+
+
+def build_supabase_client() -> Client:
+    return create_client(get_supabase_url(), get_supabase_key())
+
+
+def get_supabase_client(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> Client:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Falta el token de Supabase",
+        )
+
+    try:
+        client = build_supabase_client()
+        client.postgrest.auth(credentials.credentials)
+        return client
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de Supabase inválido o expirado",
+        ) from exc
 
 
 @app.get("/")
 def read_root():
-   return {"message": "Hello World"}
+    return {"message": "¡Hola, Fast API!"}
 
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int):
-   return {"item_id": item_id}
+@app.post("/auth/login-temporal")
+def login_temporal(payload: LoginRequest):
+    url = f"{get_supabase_url()}/auth/v1/token?grant_type=password"
+    headers = {
+        "apikey": get_supabase_key(),
+        "Content-Type": "application/json",
+    }
+    response = requests.post(
+        url,
+        json={"email": payload.email, "password": payload.password},
+        headers=headers,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Credenciales incorrectas en Supabase",
+        )
+
+    access_token = response.json().get("access_token")
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo obtener el access_token de Supabase",
+        )
+
+    return {"access_token": access_token}
 
 
-@app.get("/items/")
-def read_items(skip: int = 0, limit: int = 10, q: str | None = None):
-   results = fake_items_db[skip : skip + limit]
-   if q:
-      results.append({"item_name": q})
-   return results
-
-
-@app.post("/items/")
-def create_item(item: Item):
-   item_dict = item.model_dump()
-   if item_dict is not None:
-      fake_items_db.append(item_dict)
-   return item_dict
-
-
-@app.post("/items_form/")
-def create_item_form(
-   item_name: Annotated[str, Form()],
-   description: Annotated[str, Form()],
-   price: Annotated[float, Form()],
-   tax: Annotated[float, Form()],
-):
-   if tax < 0:
-      raise HTTPException(
-         status_code=status.HTTP_400_BAD_REQUEST,
-         detail="Tax cannot be negative.",
-      )
-
-   if any(
-      isinstance(fake_item, dict) and fake_item.get("item_name") == item_name
-      for fake_item in fake_items_db
-   ):
-      raise HTTPException(
-         status_code=status.HTTP_400_BAD_REQUEST,
-         detail="Item already exists.",
-      )
-
-   form_data = FormData(
-      item_name=item_name,
-      description=description,
-      price=price,
-      tax=tax,
-   )
-
-   message = f"Item '{form_data.item_name}' created successfully with description '{form_data.description}', price {form_data.price}, and tax {form_data.tax}."
-
-   fake_items_db.append(form_data.model_dump())
-
-   return Response(content=message, status_code=201)
-
-
-@app.post("/tasks/")
-def create_task(task: Task):
-   data = supabase.table("task").insert(
-      {
-         "title": task.title,
-         "description": task.description,
-      }
-   ).execute()
-   return data.data
-
-
-@app.get("/tasks/")
-def get_tasks():
-   data = supabase.table("task").select("*").execute()
-   return data.data
-
-
-@app.get("/tasks/{task_id}")
-def get_task(task_id: int):
-   data = supabase.table("task").select("*").eq("id", task_id).execute()
-   if not data.data:
-      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-   return data.data[0]
-
-
-@app.put("/tasks/{task_id}")
-def update_task(task_id: int, task: Task):
-   data = supabase.table("task").update(
-      {
-         "title": task.title,
-         "description": task.description,
-      }
-   ).eq("id", task_id).execute()
-   if not data.data:
-      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-   return data.data[0]
-
-
-@app.delete("/tasks/{task_id}")
-def delete_task(task_id: int):
-   data = supabase.table("task").delete().eq("id", task_id).execute()
-   if not data.data:
-      raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-   return data.data[0]
-
-
-@app.put("/items/{item_name}")
-def update_item(item_name: str, item: Item):
-   for i, fake_item in enumerate(fake_items_db):
-      if fake_item["item_name"] == item_name:
-         fake_items_db[i] = item.model_dump()
-         return {"item_name": item_name, **item.model_dump()}
-   return {"error": "Item not found"}
-
-
-@app.put("/items/{item_name}/query")
-def update_item_with_query(item_name: str, item: Item, q: str | None = None):
-   for i, fake_item in enumerate(fake_items_db):
-      if fake_item["item_name"] == item_name:
-         fake_items_db[i] = item.model_dump()
-         response = {"item_name": item_name, **item.model_dump()}
-         if q:
-            response.update({"q": q})
-         return response
-   return {"error": "Item not found"}
+@app.get("/tasks/", status_code=status.HTTP_200_OK)
+def get_tasks(supabase: Client = Depends(get_supabase_client)):
+    try:
+        response = supabase.table("task").select("*").execute()
+        return response.data
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar las tareas desde la base de datos.",
+        ) from exc
