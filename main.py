@@ -1,6 +1,8 @@
 import os
+import json
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -75,20 +77,29 @@ def login_temporal(payload: LoginRequest):
         "apikey": get_supabase_key(),
         "Content-Type": "application/json",
     }
-    response = requests.post(
+
+    request = Request(
         url,
-        json={"email": payload.email, "password": payload.password},
+        data=json.dumps({"email": payload.email, "password": payload.password}).encode("utf-8"),
         headers=headers,
-        timeout=30,
+        method="POST",
     )
 
-    if response.status_code != 200:
+    try:
+        with urlopen(request, timeout=30) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Credenciales incorrectas en Supabase",
-        )
+        ) from exc
+    except URLError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No fue posible conectar con Supabase",
+        ) from exc
 
-    access_token = response.json().get("access_token")
+    access_token = response_body.get("access_token")
     if not access_token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
